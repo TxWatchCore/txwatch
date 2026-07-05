@@ -1,4 +1,5 @@
 import os
+import json
 import time
 import httpx
 import numpy as np
@@ -9,6 +10,7 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 from contextlib import asynccontextmanager
 from typing import Optional
+from kafka import KafkaProducer
 
 from velocity import VelocityStore
 
@@ -17,6 +19,8 @@ load_dotenv()
 # ── Config ───────────────────────────────────────────────────────────────────
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 INFERENCE_URL = os.getenv("INFERENCE_URL", "http://localhost:8001/infer")
+KAFKA_BROKER = os.getenv("KAFKA_BROKER", "localhost:9092")
+KAFKA_TOPIC = os.getenv("KAFKA_TOPIC", "txwatch.decisions")
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8002"))
 
@@ -24,11 +28,12 @@ PORT = int(os.getenv("PORT", "8002"))
 redis_client: Optional[aioredis.Redis] = None
 velocity_store: Optional[VelocityStore] = None
 http_client: Optional[httpx.AsyncClient] = None
+kafka_producer: Optional[KafkaProducer] = None
 
 # ── Lifespan ──────────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global redis_client, velocity_store, http_client
+    global redis_client, velocity_store, http_client, kafka_producer
 
     print(f"Connecting to Redis at {REDIS_URL}...")
     redis_client = aioredis.from_url(REDIS_URL, decode_responses=False)
@@ -38,10 +43,18 @@ async def lifespan(app: FastAPI):
     http_client = httpx.AsyncClient(timeout=10.0)
     print(f"HTTP client ready. Inference URL: {INFERENCE_URL}")
 
+    print(f"Connecting to Kafka at {KAFKA_BROKER}...")
+    kafka_producer = KafkaProducer(
+        bootstrap_servers=[KAFKA_BROKER],
+        value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+    )
+    print(f"Kafka producer ready. Topic: {KAFKA_TOPIC}")
+
     yield
 
     await redis_client.aclose()
     await http_client.aclose()
+    kafka_producer.close()
     print("Feature service shut down.")
 
 
@@ -135,7 +148,6 @@ async def score(req: TransactionRequest):
     static_features = extract_static_features(req)
     velocity_features = await velocity_store.get_velocity_features(req.user_id)
 
-    # Append velocity features to static features
     velocity_vector = [
         float(velocity_features["velocity_count_1h"]),
         float(velocity_features["velocity_amount_1h"]),
@@ -145,14 +157,12 @@ async def score(req: TransactionRequest):
         float(velocity_features["velocity_amount_24h"]),
     ]
 
-    # Pad remaining features to match model input size (432)
     base_features = static_features + velocity_vector
     padding = [0.0] * (432 - len(base_features))
     full_feature_vector = base_features + padding
 
     feature_ms = (time.perf_counter() - feature_start) * 1000
 
-    # Record transaction in velocity store
     await velocity_store.record_transaction(
         user_id=req.user_id,
         transaction_id=req.transaction_id,
@@ -173,6 +183,21 @@ async def score(req: TransactionRequest):
         raise HTTPException(status_code=502, detail=f"Inference sidecar error: {e}")
 
     total_ms = (time.perf_counter() - total_start) * 1000
+
+    # ── Publish to Kafka ──────────────────────────────────────────────────────
+    event = {
+        "transaction_id": result["transaction_id"],
+        "risk_score": result["risk_score"],
+        "decision": result["decision"],
+        "shap_values": result.get("shap_values"),
+        "model_version": result["model_version"],
+        "shap_strategy": result["shap_strategy"],
+        "feature_ms": round(feature_ms, 3),
+        "inference_ms": result["inference_ms"],
+        "shap_ms": result["shap_ms"],
+        "total_ms": round(total_ms, 3),
+    }
+    kafka_producer.send(KAFKA_TOPIC, event)
 
     return DecisionResponse(
         transaction_id=result["transaction_id"],

@@ -1,35 +1,26 @@
-# If you prefer the allow list template instead of the deny list, see community template:
-# https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
-#
-# Binaries for programs and plugins
+# Go
+bin/
 *.exe
-*.exe~
-*.dll
-*.so
-*.dylib
 
-# Test binary, built with `go test -c`
-*.test
+# Python
+ml/.venv/
+ml/__pycache__/
+ml/**/__pycache__/
+*.pyc
+*.egg-info/
 
-# Code coverage profiles and other test artifacts
-*.out
-coverage.*
-*.coverprofile
-profile.cov
+# Data — never commit raw datasets
+ml/data/*.csv
+ml/data/*.parquet
+ml/data/*.zip
 
-# Dependency directories (remove the comment below to include it)
-# vendor/
+# Models — commit only explicitly when ready
+ml/models/*.onnx
 
-# Go workspace file
-go.work
-go.work.sum
-
-# env file
+# Environment
 .env
+*.env.local
 
-# Editor/IDE
-# .idea/
-# .vscode/
-
-openspec/
-.claude/
+# IDE
+.idea/
+.vscode/

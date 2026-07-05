@@ -108,7 +108,16 @@ class KernelSHAP(SHAPStrategyBase):
         start = time.perf_counter()
         shap_values = self.explainer.shap_values(features, nsamples=100, silent=True)
         ms = (time.perf_counter() - start) * 1000
-        fraud_shap = shap_values[1][0] if isinstance(shap_values, list) else shap_values[0]
+
+        # KernelSHAP returns a list [class_0_shap, class_1_shap] or single array
+        if isinstance(shap_values, list):
+            fraud_shap = shap_values[1][0]  # fraud class
+        else:
+            fraud_shap = shap_values[0]     # single output
+
+        # Verify non-zero
+        print(f"  [kernel] non-zero values: {np.count_nonzero(fraud_shap)}/{len(fraud_shap)}")
+
         return {str(i): float(v) for i, v in enumerate(fraud_shap)}, round(ms, 3)
 
 
